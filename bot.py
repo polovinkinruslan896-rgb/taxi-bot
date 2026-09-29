@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
-    ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -46,11 +46,7 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS drivers (
                 id INTEGER PRIMARY KEY,
-                name TEXT,
-                phone TEXT,
-                car TEXT,
-                color TEXT,
-                number TEXT,
+                name TEXT, phone TEXT, car TEXT, color TEXT, number TEXT,
                 free INTEGER DEFAULT 1,
                 orders_today INTEGER DEFAULT 0,
                 total_rating REAL DEFAULT 0,
@@ -61,17 +57,14 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS passengers (
                 id INTEGER PRIMARY KEY,
-                name TEXT,
-                phone TEXT,
+                name TEXT, phone TEXT,
                 orders_count INTEGER DEFAULT 0
             )
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS blacklist (
                 user_id INTEGER PRIMARY KEY,
-                type TEXT,
-                reason TEXT,
-                added_date TEXT
+                type TEXT, reason TEXT, added_date TEXT
             )
         """)
         await db.commit()
@@ -170,8 +163,7 @@ async def add_rating(driver_id: int, rating: int):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
             UPDATE drivers 
-            SET total_rating = total_rating + ?,
-                rating_count = rating_count + 1
+            SET total_rating = total_rating + ?, rating_count = rating_count + 1
             WHERE id = ?
         """, (rating, driver_id))
         await db.commit()
@@ -202,16 +194,13 @@ async def get_blacklist(type_: str = None):
 def calculate_price(village: str):
     hour = datetime.now().hour
     is_night = hour >= 23 or hour < 6
-    village_lower = village.lower()
+    v = village.lower()
 
-    if village_lower == "богатое":
+    if v == "богатое":
         return 250 if is_night else 150
-
-    if village_lower in {"аверьяновка", "арзамасовка", "беловка"}:
+    if v in {"аверьяновка", "арзамасовка", "беловка"}:
         return 550 if is_night else 400
-
-    # Любое другое село
-    return "Уточнить у водителя"
+    return None   # неизвестное село
 
 # ================== КЛАВИАТУРЫ ==================
 def main_kb(user_id: int):
@@ -250,9 +239,7 @@ def other_villages_kb():
     ], resize_keyboard=True)
 
 def street_kb():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="❌ Отменить")]
-    ], resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отменить")]], resize_keyboard=True)
 
 def phone_kb():
     return ReplyKeyboardMarkup(keyboard=[
@@ -289,7 +276,7 @@ def rating_kb():
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     if await is_blacklisted(message.from_user.id):
-        await message.answer("🚫 Вы в чёрном списке.")
+        await message.answer("🚫 Вы находитесь в чёрном списке. Заказ невозможен.")
         return
     await message.answer("👋 Добро пожаловать!\n\nЯ бот такси села Богатое.", reply_markup=main_kb(message.from_user.id))
 
@@ -408,27 +395,41 @@ async def back_to_admin(message: types.Message):
 
 @dp.message(F.text == "🚫 Пассажиры в ЧС")
 async def bl_passengers(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
     items = await get_blacklist("passenger")
-    text = "🚫 Пассажиры в ЧС:\n\n" + "\n".join([f"• <code>{i['user_id']}</code>" for i in items]) if items else "Пусто"
+    if not items:
+        await message.answer("Чёрный список пассажиров пуст")
+        return
+    text = "🚫 <b>Пассажиры в чёрном списке:</b>\n\n"
+    for i in items:
+        text += f"• ID: <code>{i['user_id']}</code>\n"
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(F.text == "🚫 Водители в ЧС")
 async def bl_drivers(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
     items = await get_blacklist("driver")
-    text = "🚫 Водители в ЧС:\n\n" + "\n".join([f"• <code>{i['user_id']}</code>" for i in items]) if items else "Пусто"
+    if not items:
+        await message.answer("Чёрный список водителей пуст")
+        return
+    text = "🚫 <b>Водители в чёрном списке:</b>\n\n"
+    for i in items:
+        text += f"• ID: <code>{i['user_id']}</code>\n"
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(F.text == "➕ Добавить в ЧС")
 async def bl_add(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
     await message.answer("Формат: <code>ID passenger</code> или <code>ID driver</code>", parse_mode="HTML")
     await state.set_state(AdminState.waiting_blacklist_id)
 
 @dp.message(AdminState.waiting_blacklist_id)
 async def process_blacklist_add(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
     try:
         parts = message.text.strip().split()
         await add_to_blacklist(int(parts[0]), parts[1].lower())
@@ -439,13 +440,15 @@ async def process_blacklist_add(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "➖ Убрать из ЧС")
 async def bl_remove(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
     await message.answer("Отправьте только ID:")
     await state.set_state(AdminState.waiting_blacklist_remove)
 
 @dp.message(AdminState.waiting_blacklist_remove)
 async def process_blacklist_remove(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
     try:
         await remove_from_blacklist(int(message.text.strip()))
         await message.answer("✅ Убран из ЧС", reply_markup=blacklist_kb())
@@ -457,7 +460,7 @@ async def process_blacklist_remove(message: types.Message, state: FSMContext):
 @dp.message(F.text == "🚕 Заказать такси")
 async def start_order(message: types.Message, state: FSMContext):
     if await is_blacklisted(message.from_user.id):
-        await message.answer("🚫 Вы в чёрном списке.")
+        await message.answer("🚫 Вы находитесь в чёрном списке. Заказ невозможен.")
         return
     await message.answer("📍 С какого села вас забрать?", reply_markup=village_kb())
     await state.set_state(OrderTaxi.choosing_village)
@@ -500,7 +503,6 @@ async def custom_village_input(message: types.Message, state: FSMContext):
     if message.text in {"❌ Отменить", "❌ Отменить заказ"}:
         await cancel_any(message, state)
         return
-
     await state.update_data(village=message.text)
     await message.answer("🛣 С какой улицы забрать?", reply_markup=street_kb())
     await state.set_state(OrderTaxi.waiting_street)
@@ -549,12 +551,11 @@ async def process_destination(message: types.Message, state: FSMContext):
     village = data.get("village")
     street = data.get("street")
     destination = message.text
-
     await state.update_data(destination=destination)
 
     text = (
-        f"Проверьте адрес:\n\n"
-        f"📍 Откуда: <b>{village}, {street}</b>\n"
+        f"📍 <b>Проверьте адрес</b>\n\n"
+        f"🚏 Откуда: <b>{village}, {street}</b>\n"
         f"🏁 Куда: <b>{destination}</b>\n\n"
         f"Всё верно?"
     )
@@ -584,14 +585,17 @@ async def confirm_address(message: types.Message, state: FSMContext):
         "price": price
     }
 
-    price_text = f"<b>{price} ₽</b>" if isinstance(price, int) else f"<b>{price}</b>"
+    if price is None:
+        price_text = "Уточнить у водителя"
+    else:
+        price_text = f"{price} ₽"
 
     summary = (
         f"✅ <b>Ваш заказ принят!</b>\n\n"
         f"🏘 Село: <b>{village}</b>\n"
         f"🛣 Откуда: <b>{street}</b>\n"
         f"🏁 Куда: <b>{destination}</b>\n"
-        f"💰 Стоимость: {price_text}\n\n"
+        f"💰 Стоимость: <b>{price_text}</b>\n\n"
         f"⏳ Ищем свободную машину...\n"
         f"<i>Обычно это занимает 2–5 минут</i>"
     )
@@ -601,8 +605,9 @@ async def confirm_address(message: types.Message, state: FSMContext):
 
 @dp.message(OrderTaxi.confirming_address, F.text == "✏️ Изменить")
 async def change_address(message: types.Message, state: FSMContext):
-    await message.answer("📍 С какого села вас забрать?", reply_markup=village_kb())
-    await state.set_state(OrderTaxi.choosing_village)
+    # Не сбрасываем село, просто возвращаем к улице
+    await message.answer("🛣 С какой улицы забрать?", reply_markup=street_kb())
+    await state.set_state(OrderTaxi.waiting_street)
 
 async def send_order_to_drivers(order_id: int):
     if order_id not in active_orders:
@@ -619,15 +624,19 @@ async def send_order_to_drivers(order_id: int):
             del active_orders[order_id]
         return
 
+    # Для водителя: если цена None — просто не пишем строку стоимости
     price = order["price"]
-    price_text = f"{price} ₽" if isinstance(price, int) else str(price)
+    if price is None:
+        price_line = ""
+    else:
+        price_line = f"💰 Стоимость: <b>{price} ₽</b>\n"
 
     order_text = (
         f"🆕 <b>Новый заказ</b>\n\n"
         f"🏘 Село: <b>{order['village']}</b>\n"
         f"🛣 Откуда: <b>{order['street']}</b>\n"
         f"🏁 Куда: <b>{order['destination']}</b>\n"
-        f"💰 Стоимость: <b>{price_text}</b>\n\n"
+        f"{price_line}"
         f"👤 Пассажир: {order['passenger_name']}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -645,7 +654,7 @@ async def take_order(callback: types.CallbackQuery):
     driver_id = callback.from_user.id
 
     if await is_blacklisted(driver_id):
-        await callback.answer("Вы в чёрном списке", show_alert=True)
+        await callback.answer("Вы находитесь в чёрном списке. Вы не можете брать заказы.", show_alert=True)
         return
     if order_id not in active_orders:
         await callback.answer("Заказ недоступен", show_alert=True)
@@ -664,7 +673,6 @@ async def take_order(callback: types.CallbackQuery):
 
     price = active_orders[order_id]["price"]
     passenger_phone = active_orders[order_id]["passenger_phone"]
-    price_text = f"{price} ₽" if isinstance(price, int) else str(price)
 
     driver_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"driver_cancel_{order_id}")]
@@ -682,6 +690,11 @@ async def take_order(callback: types.CallbackQuery):
         reply_markup=free_kb,
         parse_mode="HTML"
     )
+
+    if price is None:
+        price_text = "Уточнить у водителя"
+    else:
+        price_text = f"{price} ₽"
 
     passenger_text = (
         f"🚗 <b>Ваш водитель найден. Ожидайте.</b>\n\n"
@@ -730,14 +743,16 @@ async def driver_free_himself(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("bl_driver_"))
 async def bl_driver_cb(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
+    if callback.from_user.id != ADMIN_ID:
+        return
     driver_id = int(callback.data.split("_")[2])
     await add_to_blacklist(driver_id, "driver")
     await callback.answer("Добавлен в ЧС")
 
 @dp.callback_query(F.data.startswith("del_driver_"))
 async def del_driver_cb(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
+    if callback.from_user.id != ADMIN_ID:
+        return
     driver_id = int(callback.data.split("_")[2])
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("DELETE FROM drivers WHERE id = ?", (driver_id,))
