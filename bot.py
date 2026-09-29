@@ -1,5 +1,6 @@
 import asyncio
 import aiosqlite
+import os
 from datetime import datetime, date
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -12,8 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ================== НАСТРОЙКИ ==================
-import os
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("TOKEN") or "8866234378:AAEiOj8fN9k-jdS7F-FFnZZIddr-Ms2YxPM"
 ADMIN_ID = 7165265831
 DB_NAME = "taxi.db"
 # ==============================================
@@ -31,6 +31,7 @@ class OrderTaxi(StatesGroup):
     waiting_street = State()
     waiting_phone = State()
     waiting_destination = State()
+    confirming_address = State()
     searching = State()
     waiting_rating = State()
 
@@ -197,6 +198,21 @@ async def get_blacklist(type_: str = None):
             cursor = await db.execute("SELECT * FROM blacklist")
         return [dict(r) for r in await cursor.fetchall()]
 
+# ================== ЦЕНА ==================
+def calculate_price(village: str):
+    hour = datetime.now().hour
+    is_night = hour >= 23 or hour < 6
+    village_lower = village.lower()
+
+    if village_lower == "богатое":
+        return 250 if is_night else 150
+
+    if village_lower in {"аверьяновка", "арзамасовка", "беловка"}:
+        return 550 if is_night else 400
+
+    # Любое другое село
+    return "Уточнить у водителя"
+
 # ================== КЛАВИАТУРЫ ==================
 def main_kb(user_id: int):
     buttons = [[KeyboardButton(text="🚕 Заказать такси")]]
@@ -235,7 +251,6 @@ def other_villages_kb():
 
 def street_kb():
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📍 Отправить геолокацию", request_location=True)],
         [KeyboardButton(text="❌ Отменить")]
     ], resize_keyboard=True)
 
@@ -247,6 +262,12 @@ def phone_kb():
 
 def cancel_kb():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отменить")]], resize_keyboard=True)
+
+def confirm_kb():
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="✅ Верно")],
+        [KeyboardButton(text="✏️ Изменить")]
+    ], resize_keyboard=True)
 
 def searching_kb():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отменить заказ")]], resize_keyboard=True)
@@ -262,13 +283,6 @@ def rating_kb():
         [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
         [KeyboardButton(text="4"), KeyboardButton(text="5")]
     ], resize_keyboard=True)
-
-def calculate_price(village: str) -> int:
-    hour = datetime.now().hour
-    is_night = hour >= 23 or hour < 6
-    if village.lower() == "богатое":
-        return 250 if is_night else 150
-    return 500 if is_night else 400
 
 # ================== КОМАНДЫ ==================
 @dp.message(Command("start"))
@@ -426,7 +440,7 @@ async def process_blacklist_add(message: types.Message, state: FSMContext):
 @dp.message(F.text == "➖ Убрать из ЧС")
 async def bl_remove(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
-    await message.answer("Отправьте только ID:", parse_mode="HTML")
+    await message.answer("Отправьте только ID:")
     await state.set_state(AdminState.waiting_blacklist_remove)
 
 @dp.message(AdminState.waiting_blacklist_remove)
@@ -462,7 +476,7 @@ async def cancel_any(message: types.Message, state: FSMContext):
 @dp.message(OrderTaxi.choosing_village, F.text == "Богатое")
 async def village_bogatoe(message: types.Message, state: FSMContext):
     await state.update_data(village="Богатое")
-    await message.answer("🛣 С какой улицы забрать?\nИли отправьте геолокацию.", reply_markup=street_kb())
+    await message.answer("🛣 С какой улицы забрать?", reply_markup=street_kb())
     await state.set_state(OrderTaxi.waiting_street)
 
 @dp.message(OrderTaxi.choosing_village, F.text == "Другое")
@@ -473,7 +487,7 @@ async def village_other(message: types.Message, state: FSMContext):
 @dp.message(OrderTaxi.choosing_other_village, F.text.in_({"Аверьяновка", "Арзамасовка", "Беловка"}))
 async def other_village_selected(message: types.Message, state: FSMContext):
     await state.update_data(village=message.text)
-    await message.answer("🛣 С какой улицы забрать?\nИли отправьте геолокацию.", reply_markup=street_kb())
+    await message.answer("🛣 С какой улицы забрать?", reply_markup=street_kb())
     await state.set_state(OrderTaxi.waiting_street)
 
 @dp.message(OrderTaxi.choosing_other_village, F.text == "Другое")
@@ -487,14 +501,8 @@ async def custom_village_input(message: types.Message, state: FSMContext):
         await cancel_any(message, state)
         return
     await state.update_data(village=message.text)
-    await message.answer("🛣 С какой улицы забрать?\nИли отправьте геолокацию.", reply_markup=street_kb())
+    await message.answer("🛣 С какой улицы забрать?", reply_markup=street_kb())
     await state.set_state(OrderTaxi.waiting_street)
-
-@dp.message(OrderTaxi.waiting_street, F.location)
-async def process_location(message: types.Message, state: FSMContext):
-    loc = message.location
-    await state.update_data(street=f"Геолокация: {loc.latitude:.5f}, {loc.longitude:.5f}")
-    await after_street(message, state)
 
 @dp.message(OrderTaxi.waiting_street)
 async def process_street(message: types.Message, state: FSMContext):
@@ -539,8 +547,26 @@ async def process_destination(message: types.Message, state: FSMContext):
     data = await state.get_data()
     village = data.get("village")
     street = data.get("street")
-    phone = data.get("phone")
     destination = message.text
+
+    await state.update_data(destination=destination)
+
+    text = (
+        f"Проверьте адрес:\n\n"
+        f"📍 Откуда: <b>{village}, {street}</b>\n"
+        f"🏁 Куда: <b>{destination}</b>\n\n"
+        f"Всё верно?"
+    )
+    await message.answer(text, reply_markup=confirm_kb(), parse_mode="HTML")
+    await state.set_state(OrderTaxi.confirming_address)
+
+@dp.message(OrderTaxi.confirming_address, F.text == "✅ Верно")
+async def confirm_address(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    village = data.get("village")
+    street = data.get("street")
+    phone = data.get("phone")
+    destination = data.get("destination")
     user = message.from_user
     price = calculate_price(village)
 
@@ -557,18 +583,25 @@ async def process_destination(message: types.Message, state: FSMContext):
         "price": price
     }
 
+    price_text = f"<b>{price} ₽</b>" if isinstance(price, int) else f"<b>{price}</b>"
+
     summary = (
         f"✅ <b>Ваш заказ принят!</b>\n\n"
         f"🏘 Село: <b>{village}</b>\n"
         f"🛣 Откуда: <b>{street}</b>\n"
         f"🏁 Куда: <b>{destination}</b>\n"
-        f"💰 Стоимость: <b>{price} ₽</b>\n\n"
+        f"💰 Стоимость: {price_text}\n\n"
         f"⏳ Ищем свободную машину...\n"
         f"<i>Обычно это занимает 2–5 минут</i>"
     )
     await message.answer(summary, reply_markup=searching_kb(), parse_mode="HTML")
     await state.set_state(OrderTaxi.searching)
     await send_order_to_drivers(order_id)
+
+@dp.message(OrderTaxi.confirming_address, F.text == "✏️ Изменить")
+async def change_address(message: types.Message, state: FSMContext):
+    await message.answer("📍 С какого села вас забрать?", reply_markup=village_kb())
+    await state.set_state(OrderTaxi.choosing_village)
 
 async def send_order_to_drivers(order_id: int):
     if order_id not in active_orders:
@@ -585,12 +618,15 @@ async def send_order_to_drivers(order_id: int):
             del active_orders[order_id]
         return
 
+    price = order["price"]
+    price_text = f"{price} ₽" if isinstance(price, int) else str(price)
+
     order_text = (
         f"🆕 <b>Новый заказ</b>\n\n"
         f"🏘 Село: <b>{order['village']}</b>\n"
         f"🛣 Откуда: <b>{order['street']}</b>\n"
         f"🏁 Куда: <b>{order['destination']}</b>\n"
-        f"💰 Стоимость: <b>{order['price']} ₽</b>\n\n"
+        f"💰 Стоимость: <b>{price_text}</b>\n\n"
         f"👤 Пассажир: {order['passenger_name']}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -627,6 +663,7 @@ async def take_order(callback: types.CallbackQuery):
 
     price = active_orders[order_id]["price"]
     passenger_phone = active_orders[order_id]["passenger_phone"]
+    price_text = f"{price} ₽" if isinstance(price, int) else str(price)
 
     driver_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"driver_cancel_{order_id}")]
@@ -637,7 +674,6 @@ async def take_order(callback: types.CallbackQuery):
     free_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Я освободился", callback_data=f"driver_free_{driver_id}")]
     ])
-
     await bot.send_message(
         driver_id,
         f"📞 Номер пассажира: <b>{passenger_phone}</b>\n\n"
@@ -653,7 +689,7 @@ async def take_order(callback: types.CallbackQuery):
         f"🎨 Цвет: <b>{driver['color']}</b>\n"
         f"🔢 Гос. номер: <b>{driver['number']}</b>\n"
         f"📞 Телефон: <b>{driver['phone']}</b>\n"
-        f"💰 Стоимость: <b>{price} ₽</b>"
+        f"💰 Стоимость: <b>{price_text}</b>"
     )
     await bot.send_message(order_id, passenger_text, reply_markup=finish_kb(), parse_mode="HTML")
 
@@ -680,19 +716,17 @@ async def driver_cancel_order(callback: types.CallbackQuery):
     except:
         pass
     await send_order_to_drivers(order_id)
+
 @dp.callback_query(F.data.startswith("driver_free_"))
 async def driver_free_himself(callback: types.CallbackQuery):
     driver_id = int(callback.data.split("_")[2])
-
     if callback.from_user.id != driver_id:
         await callback.answer("Это не ваша кнопка", show_alert=True)
         return
-
     await set_driver_free(driver_id, True)
-    await callback.message.edit_text(
-        callback.message.text + "\n\n✅ Вы снова свободны и можете принимать заказы."
-    )
+    await callback.message.edit_text(callback.message.text + "\n\n✅ Вы снова свободны и можете принимать заказы.")
     await callback.answer("Вы свободны!")
+
 @dp.callback_query(F.data.startswith("bl_driver_"))
 async def bl_driver_cb(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
@@ -747,16 +781,6 @@ async def process_rating(message: types.Message, state: FSMContext):
     await message.answer(answer, reply_markup=main_kb(user_id))
     await state.clear()
 
-@dp.message(F.text == "🚕 Новый заказ")
-async def new_order(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id in active_orders:
-        driver_id = active_orders[user_id].get("driver_id")
-        if driver_id:
-            await set_driver_free(driver_id, True)
-        del active_orders[user_id]
-    await state.clear()
-    await message.answer("Хорошо!", reply_markup=main_kb(user_id))
 @dp.message(F.text == "🏠 Меню")
 async def go_to_menu(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -767,6 +791,7 @@ async def go_to_menu(message: types.Message, state: FSMContext):
         del active_orders[user_id]
     await state.clear()
     await message.answer("Главное меню", reply_markup=main_kb(user_id))
+
 async def main():
     await init_db()
     print("Бот запущен")
