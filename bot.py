@@ -497,9 +497,10 @@ async def other_village_custom(message: types.Message, state: FSMContext):
 
 @dp.message(OrderTaxi.waiting_custom_village)
 async def custom_village_input(message: types.Message, state: FSMContext):
-    if message.text == "❌ Отменить":
+    if message.text in {"❌ Отменить", "❌ Отменить заказ"}:
         await cancel_any(message, state)
         return
+
     await state.update_data(village=message.text)
     await message.answer("🛣 С какой улицы забрать?", reply_markup=street_kb())
     await state.set_state(OrderTaxi.waiting_street)
