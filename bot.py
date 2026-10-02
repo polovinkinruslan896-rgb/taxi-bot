@@ -307,15 +307,32 @@ async def admin_drivers(message: types.Message):
 
 @dp.message(F.text == "👤 Пассажиры")
 async def admin_passengers(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
+
     passengers = await get_all_passengers()
     if not passengers:
-        await message.answer("Пассажиров нет")
+        await message.answer("Пассажиров пока нет")
         return
+
     text = "👤 <b>Пассажиры</b>\n\n"
+    shown = 0
     for p in passengers:
-        text += f"• <b>{p['name']}</b>\n  📞 {p['phone'] or 'нет'}\n  📦 {p['orders_count']}\n  ID: <code>{p['id']}</code>\n\n"
-    await message.answer(text, parse_mode="HTML")
+        # Не показываем тех, кто в ЧС
+        if await is_blacklisted(p["id"], "passenger"):
+            continue
+        text += (
+            f"• <b>{p['name']}</b>\n"
+            f"  📞 {p['phone'] or 'нет'}\n"
+            f"  📦 Заказов: {p['orders_count']}\n"
+            f"  ID: <code>{p['id']}</code>\n\n"
+        )
+        shown += 1
+
+    if shown == 0:
+        await message.answer("Нет активных пассажиров")
+    else:
+        await message.answer(text, parse_mode="HTML")
 
 @dp.message(F.text == "➕ Добавить водителя")
 async def admin_add_driver(message: types.Message, state: FSMContext):
@@ -401,9 +418,12 @@ async def process_blacklist_remove(message: types.Message, state: FSMContext):
 # ================== ЗАКАЗ ==================
 @dp.message(F.text == "🚕 Заказать такси")
 async def start_order(message: types.Message, state: FSMContext):
+    # Жёсткая проверка
     if await is_blacklisted(message.from_user.id, "passenger"):
-        await message.answer("🚫 Вы в чёрном списке. Заказ невозможен.")
+        await state.clear()
+        await message.answer("🚫 Вы находитесь в чёрном списке. Заказ невозможен.")
         return
+
     await state.clear()
     await message.answer("📍 Откуда вас забрать?", reply_markup=village_kb())
     await state.set_state(OrderTaxi.choosing_village)
@@ -422,8 +442,8 @@ async def cancel_any(message: types.Message, state: FSMContext):
 @dp.message(OrderTaxi.choosing_village, F.text == "Богатое")
 async def village_bogatoe(message: types.Message, state: FSMContext):
     await state.update_data(village="Богатое")
+    await message.answer("🛣 Откуда забрать (улица и дом):", reply_markup=cancel_kb())
     await state.set_state(OrderTaxi.waiting_street)
-    await message.answer("Откуда забрать (улица и дом):", reply_markup=cancel_kb())
 
 @dp.message(OrderTaxi.choosing_village, F.text == "Другое")
 async def village_other(message: types.Message, state: FSMContext):
@@ -433,8 +453,8 @@ async def village_other(message: types.Message, state: FSMContext):
 @dp.message(OrderTaxi.choosing_other_village, F.text.in_({"Аверьяновка", "Арзамасовка", "Беловка"}))
 async def other_village_selected(message: types.Message, state: FSMContext):
     await state.update_data(village=message.text)
+    await message.answer("🛣 Откуда забрать (улица и дом):", reply_markup=cancel_kb())
     await state.set_state(OrderTaxi.waiting_street)
-    await message.answer("Откуда забрать (улица и дом):", reply_markup=cancel_kb())
 
 @dp.message(OrderTaxi.choosing_other_village, F.text == "Другое")
 async def other_village_custom(message: types.Message, state: FSMContext):
@@ -446,10 +466,9 @@ async def custom_village_input(message: types.Message, state: FSMContext):
     if message.text in {"❌ Отменить", "❌ Отменить заказ"}:
         await cancel_any(message, state)
         return
-
     await state.update_data(village=message.text.strip())
-    await state.set_state(OrderTaxi.waiting_street)
     await message.answer("🛣 Откуда забрать (улица и дом):", reply_markup=cancel_kb())
+    await state.set_state(OrderTaxi.waiting_street)
 
 @dp.message(OrderTaxi.waiting_street)
 async def process_street(message: types.Message, state: FSMContext):
@@ -458,8 +477,8 @@ async def process_street(message: types.Message, state: FSMContext):
         return
 
     await state.update_data(street=message.text.strip())
-    await state.set_state(OrderTaxi.waiting_destination)
     await message.answer("🏁 Куда поедем? (улица и дом):", reply_markup=cancel_kb())
+    await state.set_state(OrderTaxi.waiting_destination)
 
 @dp.message(OrderTaxi.waiting_destination)
 async def process_destination(message: types.Message, state: FSMContext):
@@ -513,11 +532,13 @@ async def show_confirmation(message: types.Message, state: FSMContext):
     await state.set_state(OrderTaxi.confirming_address)
 
 @dp.message(OrderTaxi.confirming_address, F.text == "✅ Верно")
+
 async def confirm_address(message: types.Message, state: FSMContext):
     if await is_blacklisted(message.from_user.id, "passenger"):
-        await message.answer("🚫 Вы в чёрном списке. Заказ невозможен.")
         await state.clear()
+        await message.answer("🚫 Вы находитесь в чёрном списке. Заказ невозможен.")
         return
+
 
     data = await state.get_data()
     village = data.get("village")
@@ -689,16 +710,15 @@ async def del_driver_cb(callback: types.CallbackQuery):
 
 @dp.message(F.text == "⭐ Оценить заказ")
 async def ask_rating(message: types.Message, state: FSMContext):
-    await state.set_state(OrderTaxi.waiting_rating)
     await message.answer("⭐ Оцените от 1 до 5:", reply_markup=rating_kb())
+    await state.set_state(OrderTaxi.waiting_rating)
 
 @dp.message(F.text.in_({"1", "2", "3", "4", "5"}))
 async def process_rating(message: types.Message, state: FSMContext):
-    if await state.get_state() != OrderTaxi.waiting_rating.state:
-        return
     rating = int(message.text)
     user_id = message.from_user.id
     driver_id = None
+
     if user_id in active_orders:
         driver_id = active_orders[user_id].get("driver_id")
         if driver_id:
@@ -712,11 +732,20 @@ async def process_rating(message: types.Message, state: FSMContext):
         except:
             pass
 
-    answers = {
-        5: "🌟 Спасибо за высокую оценку!",
-        4: "👍 Спасибо! Будем стараться на 5+",
-    }
-    await message.answer(answers.get(rating, "🙏 Спасибо за оценку"), reply_markup=main_kb(user_id))
+    if rating == 5:
+        text = "🌟 Спасибо за высокую оценку!"
+    elif rating == 4:
+        text = "👍 Спасибо! Будем стараться на 5+"
+    elif rating == 3:
+        text = "👍 Спасибо! Будем стараться на 5+"
+    elif rating == 2:
+        text = "👍 Спасибо за честность! Будем стараться на 5+"
+    elif rating == 1:
+        text = "👍 Спасибо за честность! Будем стараться на 5+"
+    else:
+        text = "🙏 Спасибо за оценку"
+
+    await message.answer(text, reply_markup=main_kb(user_id))
     await state.clear()
 
 @dp.message(F.text == "🏠 Меню")
