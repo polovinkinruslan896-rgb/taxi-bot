@@ -645,7 +645,7 @@ async def take_order(callback: types.CallbackQuery):
     free_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Я освободился", callback_data=f"driver_free_{driver_id}")]
     ])
-    await bot.send_message(driver_id, f"📞 Пассажир: <b>{phone}</b>\n\nПосле поездки нажмите кнопку:", reply_markup=free_kb, parse_mode="HTML")
+    await bot.send_message(driver_id, f"📞 Пассажир: <b>{phone}</b>\n\nПосле поездки нажмите кнопку для того чтобы снова принимать заказы:", reply_markup=free_kb, parse_mode="HTML")
 
     price_text = "Уточнить у водителя" if price is None else f"{price} ₽"
     text = (
@@ -741,7 +741,7 @@ async def process_rating(message: types.Message, state: FSMContext):
     elif rating == 2:
         text = "👍 Спасибо за честность! Будем стараться на 5+"
     elif rating == 1:
-        text = "👍 Спасибо за честность! Будем стараться на 5+"
+        text = "👍 Спасибо! Будем стараться на 5+"
     else:
         text = "🙏 Спасибо за оценку"
 
