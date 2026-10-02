@@ -172,9 +172,12 @@ async def get_blacklist(type_: str = None):
 
 def calculate_price(village: str):
     moscow = pytz.timezone("Europe/Moscow")
-    hour = datetime.now(moscow).hour
+    now = datetime.now(moscow)
+    hour = now.hour
     is_night = hour >= 23 or hour < 6
+
     v = village.lower().strip()
+
     if v == "богатое":
         return 250 if is_night else 150
     if v in {"аверьяновка", "арзамасовка", "беловка"}:
@@ -419,8 +422,8 @@ async def cancel_any(message: types.Message, state: FSMContext):
 @dp.message(OrderTaxi.choosing_village, F.text == "Богатое")
 async def village_bogatoe(message: types.Message, state: FSMContext):
     await state.update_data(village="Богатое")
-    await message.answer("🛣 Улица и дом (откуда):", reply_markup=cancel_kb())
     await state.set_state(OrderTaxi.waiting_street)
+    await message.answer("Откуда забрать (улица и дом):", reply_markup=cancel_kb())
 
 @dp.message(OrderTaxi.choosing_village, F.text == "Другое")
 async def village_other(message: types.Message, state: FSMContext):
@@ -430,8 +433,8 @@ async def village_other(message: types.Message, state: FSMContext):
 @dp.message(OrderTaxi.choosing_other_village, F.text.in_({"Аверьяновка", "Арзамасовка", "Беловка"}))
 async def other_village_selected(message: types.Message, state: FSMContext):
     await state.update_data(village=message.text)
-    await message.answer("🛣 Улица и дом (откуда):", reply_markup=cancel_kb())
     await state.set_state(OrderTaxi.waiting_street)
+    await message.answer("Откуда забрать (улица и дом):", reply_markup=cancel_kb())
 
 @dp.message(OrderTaxi.choosing_other_village, F.text == "Другое")
 async def other_village_custom(message: types.Message, state: FSMContext):
@@ -443,31 +446,41 @@ async def custom_village_input(message: types.Message, state: FSMContext):
     if message.text in {"❌ Отменить", "❌ Отменить заказ"}:
         await cancel_any(message, state)
         return
+
     await state.update_data(village=message.text.strip())
-    await message.answer("🛣 Улица и дом (откуда):", reply_markup=cancel_kb())
     await state.set_state(OrderTaxi.waiting_street)
+    await message.answer("🛣 Откуда забрать (улица и дом):", reply_markup=cancel_kb())
 
 @dp.message(OrderTaxi.waiting_street)
 async def process_street(message: types.Message, state: FSMContext):
     if message.text in {"❌ Отменить", "❌ Отменить заказ"}:
         await cancel_any(message, state)
         return
+
     await state.update_data(street=message.text.strip())
-    await message.answer("🏁 Куда поедем? (улица и дом):", reply_markup=cancel_kb())
     await state.set_state(OrderTaxi.waiting_destination)
+    await message.answer("🏁 Куда поедем? (улица и дом):", reply_markup=cancel_kb())
 
 @dp.message(OrderTaxi.waiting_destination)
 async def process_destination(message: types.Message, state: FSMContext):
     if message.text in {"❌ Отменить", "❌ Отменить заказ"}:
         await cancel_any(message, state)
         return
+
     await state.update_data(destination=message.text.strip())
-    await message.answer(
-        "📱 Укажите номер телефона\n"
-        "Можно написать вручную или нажать кнопку «Отправить номер»",
-        reply_markup=phone_kb()
-    )
-    await state.set_state(OrderTaxi.waiting_phone)
+
+    # Проверяем, есть ли уже сохранённый номер
+    passenger = await get_passenger(message.from_user.id)
+    if passenger and passenger.get("phone"):
+        await state.update_data(phone=passenger["phone"])
+        await show_confirmation(message, state)
+    else:
+        await message.answer(
+            "📱 Укажите номер телефона\n"
+            "Можно написать вручную или нажать кнопку «Отправить номер»",
+            reply_markup=phone_kb()
+        )
+        await state.set_state(OrderTaxi.waiting_phone)
 
 @dp.message(OrderTaxi.waiting_phone, F.contact)
 async def process_phone_contact(message: types.Message, state: FSMContext):
@@ -538,7 +551,7 @@ async def confirm_address(message: types.Message, state: FSMContext):
 
 @dp.message(OrderTaxi.confirming_address, F.text == "✏️ Изменить")
 async def change_address(message: types.Message, state: FSMContext):
-    await message.answer("🛣 Улица и дом (откуда):", reply_markup=cancel_kb())
+    await message.answer("🛣 Откуда забрать (улица и дом):", reply_markup=cancel_kb())
     await state.set_state(OrderTaxi.waiting_street)
 
 async def send_order_to_drivers(order_id: int):
